@@ -7,7 +7,8 @@
   },
   "type": "module",
   "scripts": {
-    "dev:check": "node --check bin/ai.js && node bin/ai.js --help > /dev/null",
+    "test": "node --test",
+    "dev:check": "node --check bin/ai.js && node bin/ai.js --help > /dev/null && npm test",
     "dev:watch": "node scripts/dev-watch.mjs",
     "dev:link": "npm link",
     "dev:unlink": "npm unlink -g cmd-ai",

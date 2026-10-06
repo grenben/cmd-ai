@@ -4,6 +4,12 @@ import { execSync } from 'child_process';
 
 const watchedFiles = [
   'bin/ai.js',
+  'lib/codex.js',
+  'lib/compact-context.js',
+  'test/compact-context.test.js',
+  'test/codex.test.js',
+  'test/llamacpp.test.js',
+  'lib/llamacpp.js',
   'cmd-ai-completion.sh',
   'package.json',
   'README.md',

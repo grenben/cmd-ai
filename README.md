@@ -2,19 +2,46 @@
 
 **cmd-ai** is a natural language shell assistant powered by AI. It turns plain English (or any prompt) into real, executable shell commands — with safety, explanation, history, and autocompletion built-in.
 
-By default, it uses **Ollama** (local models on your machine), and you can also configure it to use **OpenAI**, **Google Gemini**, or **Anthropic Claude** APIs.
+By default, it uses **Codex CLI with your ChatGPT subscription** to suggest shell commands. You can also configure **Ollama**, a **llama.cpp server**, or the **OpenAI**, **Google Gemini**, and **Anthropic Claude** APIs.
 
 ![Example Usage](example.png)
 
 ## Installation
 
-To install `cmd-ai`, use the following command:
+To install this fork, including the llama.cpp and Codex subscription providers,
+on your workstation or server:
 
 ```bash
-npm install -g cmd-ai
+npm install -g 'git+https://github.com/grenben/cmd-ai.git#main'
+ai config
 ```
 
-Ensure you have Node.js installed (v24 via `.nvmrc` is recommended) on your system before proceeding with the installation.
+Install Git and Node.js first (v24 via `.nvmrc` is recommended). Run the same
+installation command again to update from this fork. `npm install -g cmd-ai`
+installs the upstream npm release, which does not include this fork's changes.
+
+For a server using a remote local model, select `llamacpp` in `ai config`, enter
+the model server URL, and choose its advertised model ID. The server running
+`ai` must be able to reach that endpoint. Test command generation with:
+
+```bash
+ai list files --dry
+```
+
+Provider configuration is local to each machine; configure the server separately.
+The `llamacpp` provider needs no Codex CLI or cloud API key.
+
+For the default Codex provider, install a recent Codex CLI and sign in with ChatGPT:
+
+```bash
+npm install -g @openai/codex
+codex login
+ai config
+```
+
+Choose `codex` in `ai config`. Existing installations retain their configured
+provider until you change it. Codex must support `exec --ignore-user-config`,
+`--ephemeral`, and `--output-schema`; update the CLI if prompted.
 
 ## Configuration
 
@@ -26,12 +53,16 @@ ai config
 
 This command will guide you through provider setup.
 
-- **ollama** (default): Uses local models from your Ollama installation. `ai config` checks Ollama and lets you choose one of your installed models.
-- **openai**: Uses OpenAI Codex models (hardcoded list in code, including `gpt-5.3-codex` and `gpt-5.3-codex-spark`) and lets you choose reasoning effort.
+- **codex** (default): Uses the ChatGPT login managed by Codex CLI. No API key is needed. Choose an optional model ID and reasoning effort; the default is the CLI's built-in model with `low` effort.
+- **ollama**: Uses local models from your Ollama installation. `ai config` checks Ollama and lets you choose one of your installed models.
+- **llamacpp**: Connects to a llama.cpp server over HTTP or HTTPS. Enter its endpoint and select a model from the server's model list. No local Ollama installation is needed.
+- **openai**: Uses the OpenAI Responses API with an API key and separate API credits. Uses a hardcoded model list and lets you choose reasoning effort.
 - **gemini**: Uses Google Gemini API models (hardcoded list in code) and lets you choose reasoning effort.
 - **claude**: Uses Anthropic Claude API models (hardcoded list in code). Reasoning effort is configurable for supported models (e.g. Opus/Sonnet).
 
-The default provider is **ollama**.
+The default provider is **codex**. ChatGPT subscription access and API-key billing
+are separate authentication paths; subscription usage limits still apply.
+See [OpenAI's authentication documentation](https://developers.openai.com/codex/auth/).
 
 Your configuration is stored securely in:
 ```bash
@@ -41,6 +72,45 @@ $XDG_CONFIG_HOME/cmd-ai/config.json
 If `XDG_CONFIG_HOME` is not set, `cmd-ai` uses:
 ```bash
 ~/.config/cmd-ai/config.json
+```
+
+### Codex subscription
+
+`cmd-ai` calls `codex exec` using your existing ChatGPT login. It verifies the
+authentication method, excludes API-key environment variables from that process,
+and requires ChatGPT authentication. It never reads or copies Codex login tokens.
+
+Generation runs in an empty temporary directory with a read-only sandbox,
+action tools disabled, and a JSON output schema. Codex user configuration is
+ignored for these requests so unrelated plugins, hooks, and provider settings
+do not affect command generation. Your `ai config` model and effort choices
+control the request. `ai` still shows the suggestion, applies its danger filter,
+and asks for confirmation before execution. `--dry` never executes it.
+
+To check or renew your login:
+
+```bash
+codex login status
+codex login
+```
+
+### llama.cpp server
+
+Run `ai config`, choose `llamacpp`, enter your server URL (for example,
+`http://localhost:8080`), and select a model. An existing `/v1` suffix is accepted.
+The server must expose `/v1/models` and `/v1/chat/completions` without authentication.
+Command generation uses llama.cpp's schema-constrained JSON output.
+This provider uses a concise shell/OS prompt and skips the command inventory
+to accommodate small local models.
+
+The saved settings look like this (use the model ID returned by your server):
+
+```json
+{
+  "provider": "llamacpp",
+  "llamacppBaseUrl": "http://localhost:8080/v1",
+  "llamacppModel": "your-model-id"
+}
 ```
 
 ## Usage
@@ -55,7 +125,11 @@ This will first display the suggested command based on your input. If you confir
 
 On non-Windows systems, when the Node.js runtime supports `process.execve`, `ai` hands off execution to your shell with `execve`, so `ai` is replaced in the process tree. If `execve` is unavailable (or fails), `ai` falls back to `child_process.exec`.
 
-Before generation, `ai` also builds a local command inventory from your `PATH`, detects common package managers, and samples versions of known tools. That context is included in the model prompt so it can prefer installed commands and suggest install steps when required commands appear missing. To keep token usage bounded, command names are capped.
+Before generation, `codex` scans your `PATH` for relevant commands and package
+managers, then includes a compact list in the prompt without running version
+probes. The `llamacpp` provider skips this inventory entirely. Other providers
+include a larger command inventory and sample versions of known tools.
+Command names are capped to keep prompts bounded.
 
 Here some pre-defined commands:
 
@@ -121,6 +195,7 @@ This watches key files and reruns:
 `dev:check` performs:
 - syntax check (`node --check bin/ai.js`)
 - CLI smoke check (`node bin/ai.js --help`)
+- automated provider and confirmation-flow tests (`npm test`)
 
 Build note:
 - This project is plain Node.js ESM (no transpilation step), so `npm run dev:link` is enough to test changes immediately in your global `ai` command.

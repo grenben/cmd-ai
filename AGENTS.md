@@ -14,12 +14,24 @@ Primary flow:
 Configured with `ai config`.
 
 Supported providers:
-- `ollama` (default): uses local Ollama models selected from `ollama list`
+- `codex` (default): uses `codex exec` with an existing ChatGPT subscription login
+- `ollama`: uses local Ollama models selected from `ollama list`
+- `llamacpp`: uses a configurable llama.cpp HTTP(S) server through `/v1/chat/completions`, with models discovered from `/v1/models`
 - `openai`: uses OpenAI Codex models through the Responses API
 - `gemini`: uses Google Gemini models through `generateContent`
 - `claude`: uses Anthropic Claude models through the Messages API
 
-### OpenAI (hardcoded model list)
+### Codex subscription behavior
+- requires a recent Codex CLI installed on PATH and `codex login` with ChatGPT
+- verifies login using `codex login status`, without reading stored tokens
+- ignores API-key environment variables and enforces ChatGPT authentication
+- stores optional `codexModel` (empty means the CLI's built-in default) and `codexReasoningEffort` (default `low`)
+- uses `codex exec` in a temporary directory, with user config ignored, action tools disabled, read-only sandbox, and schema-constrained JSON output
+- tasks are passed through stdin; generated commands still pass through the normal danger filter, confirmation, dry-run, and history paths
+- uses a compact PATH inventory of common/task-mentioned commands and package managers without launching version probes
+- existing explicitly configured providers are retained until changed via `ai config`
+
+### OpenAI API (hardcoded model list, separately billed)
 - `gpt-5.3-codex`
 - `gpt-5.3-codex-spark`
 - `gpt-5.2-codex`
@@ -67,6 +79,14 @@ Implementation detail:
 - fetches local models from `ollama list`
 - user picks one model in `ai config`
 - selected model is stored in config and used for prompt generation
+
+### llama.cpp behavior
+- `ai config` prompts for the endpoint and discovers models from the server
+- stores `llamacppBaseUrl` (including `/v1`) and `llamacppModel` in config
+- uses schema-constrained JSON for commands and optional explanations
+- uses a concise shell/OS prompt without the command inventory for small models
+- rejects truncated or malformed responses before command parsing
+- requires no local Ollama installation; currently supports servers without authentication
 
 ## Commands and Flags
 Commands:
@@ -124,6 +144,10 @@ Generated provider output is parsed by:
 
 ## Core Files
 - CLI logic: `bin/ai.js`
+- Codex subscription backend: `lib/codex.js`
+- Codex command context: `lib/compact-context.js`
+- llama.cpp server backend: `lib/llamacpp.js`
+- Provider and confirmation-flow tests: `test/` (`npm test`, also run by `dev:check`)
 - shell completion script: `cmd-ai-completion.sh`
 - package metadata + bin mapping: `package.json`
 - docs: `README.md`

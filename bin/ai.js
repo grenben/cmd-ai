@@ -7,6 +7,17 @@ import { fileURLToPath } from 'url';
 import readline from 'readline';
 import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
+import { buildCompactCommandContext } from '../lib/compact-context.js';
+import {
+  checkCodexLogin,
+  generateCodexCommand,
+  CODEX_REASONING_OPTIONS,
+} from '../lib/codex.js';
+import {
+  normalizeLlamaCppBaseUrl,
+  getLlamaCppModels,
+  generateLlamaCppCommand,
+} from '../lib/llamacpp.js';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -32,7 +43,7 @@ const LEGACY_CONFIG_PATH = path.join(HOME_DIR, '.ai-config.json');
 const LEGACY_HISTORY_PATH = path.join(HOME_DIR, '.ai-command-history.json');
 const LEGACY_AUTOCOMPLETE_PATH = path.join(HOME_DIR, '.cmd-ai-completion.sh');
 
-const PROVIDERS = ['ollama', 'openai', 'gemini', 'claude'];
+const PROVIDERS = ['codex', 'ollama', 'llamacpp', 'openai', 'gemini', 'claude'];
 
 const OPENAI_MODELS = [
   'gpt-5.3-codex',
@@ -58,7 +69,9 @@ const CLAUDE_MODELS = [
 ];
 
 const DEFAULT_CONFIG = {
-  provider: 'ollama',
+  provider: 'codex',
+  codexModel: '',
+  codexReasoningEffort: 'low',
   openaiModel: OPENAI_MODELS[0],
   openaiReasoningEffort: 'medium',
   geminiModel: GEMINI_MODELS[0],
@@ -623,8 +636,10 @@ Flags:
   --version     Show the package version
 
 Providers:
+  codex       Uses your Codex ChatGPT subscription (default; requires codex login).
   ollama      Uses local Ollama models (requires ollama installed).
-  openai      Uses OpenAI Codex models (requires API key).
+  llamacpp    Uses a llama.cpp server (configurable endpoint and model).
+  openai      Uses the OpenAI API (requires API key and separate API credits).
   gemini      Uses Google Gemini API models (requires API key).
   claude      Uses Anthropic Claude API models (requires API key).
 
@@ -1120,6 +1135,13 @@ function normalizeConfig(rawConfig) {
 
   if (!PROVIDERS.includes(config.provider)) {
     config.provider = DEFAULT_CONFIG.provider;
+  }
+
+  if (typeof config.codexModel !== 'string') {
+    config.codexModel = DEFAULT_CONFIG.codexModel;
+  }
+  if (!CODEX_REASONING_OPTIONS.includes(config.codexReasoningEffort)) {
+    config.codexReasoningEffort = DEFAULT_CONFIG.codexReasoningEffort;
   }
 
   if (!OPENAI_MODELS.includes(config.openaiModel)) {
@@ -1836,6 +1858,19 @@ async function generateCommandOllama(
   }
 }
 
+async function configureCodex(config) {
+  console.log('\nConfiguring Codex subscription provider.');
+  await checkCodexLogin();
+  console.log('Using your existing Codex ChatGPT login. No API key is needed.');
+  const currentModel = config.codexModel || 'default';
+  const answer = (await ask(`Codex model ("default" uses the CLI default) [${currentModel}]: `)).trim();
+  const selectedModel = answer || currentModel;
+  config.codexModel = selectedModel === 'default' ? '' : selectedModel;
+  config.codexReasoningEffort = await promptChoice(
+    'Codex reasoning effort', CODEX_REASONING_OPTIONS, config.codexReasoningEffort
+  );
+}
+
 async function configureOpenAI(config) {
   console.log('\nConfiguring OpenAI provider.');
   console.log(
@@ -1940,7 +1975,31 @@ async function configureOllama(config) {
   );
 }
 
+async function configureLlamaCpp(config) {
+  console.log('\nConfiguring llama.cpp provider.');
+  const currentUrl = config.llamacppBaseUrl || 'http://localhost:8080/v1';
+  const answer = (await ask(`llama.cpp endpoint [${currentUrl}]: `)).trim();
+  config.llamacppBaseUrl = normalizeLlamaCppBaseUrl(answer || currentUrl);
+
+  const models = await getLlamaCppModels(config.llamacppBaseUrl);
+  if (models.length === 0) {
+    throw new Error('No models found. Load a model on your llama.cpp server first.');
+  }
+  config.llamacppModel = await promptChoice(
+    'llama.cpp model', models, config.llamacppModel
+  );
+}
+
 async function configureProviderSettings(config) {
+  if (config.provider === 'codex') {
+    await configureCodex(config);
+    return;
+  }
+  if (config.provider === 'llamacpp') {
+    await configureLlamaCpp(config);
+    return;
+  }
+
   if (config.provider === 'openai') {
     await configureOpenAI(config);
     return;
@@ -1965,6 +2024,12 @@ async function configureProviderSettings(config) {
 }
 
 function summarizeProvider(config) {
+  if (config.provider === 'codex') {
+    return `Provider: codex (ChatGPT subscription) | Model: ${config.codexModel || 'CLI default'} | Reasoning effort: ${config.codexReasoningEffort}`;
+  }
+  if (config.provider === 'llamacpp') {
+    return `Provider: llamacpp | Model: ${config.llamacppModel} | Endpoint: ${config.llamacppBaseUrl}`;
+  }
   if (config.provider === 'openai') {
     return `Provider: openai | Model: ${config.openaiModel} | Reasoning effort: ${config.openaiReasoningEffort}`;
   }
@@ -1988,6 +2053,31 @@ async function generateWithConfiguredProvider(
   commandAvailabilityContext,
   explainMode
 ) {
+  if (config.provider === 'codex') {
+    return generateCodexCommand({
+      model: config.codexModel,
+      reasoningEffort: config.codexReasoningEffort,
+      systemInstruction: [
+        `Suggest the simplest safe shell commands for ${shellInfo} on ${osInfo}.`,
+        'Use syntax supported by this OS and shell. Keep paths relative unless the task specifies otherwise.',
+        commandAvailabilityContext,
+      ].filter(Boolean).join('\n'),
+      userPrompt,
+      explainMode,
+    });
+  }
+
+  if (config.provider === 'llamacpp') {
+    return generateLlamaCppCommand({
+      baseUrl: config.llamacppBaseUrl,
+      model: config.llamacppModel,
+      // Small shell models work best with a concise task and output instruction.
+      systemInstruction: `You are a helpful shell (${shellInfo}) assistant, running on ${os.platform() === 'darwin' ? 'macOS' : osInfo}. Return a strict JSON object with key: "commands" (array of executable shell commands).${explainMode ? ' Also include an "explanation" string with one brief sentence.' : ''} Output only valid JSON.`,
+      userPrompt,
+      explainMode,
+    });
+  }
+
   if (config.provider === 'openai') {
     if (!config.openaiApiKey) {
       throw new Error(
@@ -2211,12 +2301,20 @@ async function main() {
     process.exit(0);
   }
 
-  try {
-    commandAvailabilityContext = await buildCommandAvailabilityContext();
-  } catch (error) {
-    console.warn(
-      `Warning: Could not gather local command inventory (${error.message}). Continuing without it.`
-    );
+  if (config.provider !== 'llamacpp') {
+    try {
+      commandAvailabilityContext = config.provider === 'codex'
+        ? buildCompactCommandContext(
+          listInstalledCommandsFromPath(),
+          userPrompt,
+          PACKAGE_MANAGER_CANDIDATES[process.platform] || PACKAGE_MANAGER_CANDIDATES.fallback
+        )
+        : await buildCommandAvailabilityContext();
+    } catch (error) {
+      console.warn(
+        `Warning: Could not gather local command inventory (${error.message}). Continuing without it.`
+      );
+    }
   }
 
   let rawModelOutput = '';
